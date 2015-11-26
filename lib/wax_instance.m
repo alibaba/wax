@@ -34,6 +34,8 @@ static BOOL addMethodByInvocation(id klass, SEL selector, char * typeDescription
 static void hookForwardInvocation(id self, SEL sel, NSInvocation *anInvocation);
 static void recordWaxDefinedSelector(id klass, SEL selector, SEL newSelector, char *typeDescription);
 
+//record the last called class_selector
+static NSString *_lastForwardClassSelecotorKey = nil;
 
 extern void wax_printStack(lua_State *L);
 extern void wax_printStackAt(lua_State *L, int i);
@@ -829,9 +831,10 @@ static BOOL isMethodReplacedByInvocation(id klass, SEL selector){
 
 static void replaceMethodAndGenerateORIG(id klass, SEL selector, IMP newIMP){
     Method selectorMethod = class_getInstanceMethod(klass, selector);
+    IMP prevImp = method_getImplementation(selectorMethod);
     const char *typeDescription =  method_getTypeEncoding(selectorMethod);
-    
-    IMP prevImp = class_replaceMethod(klass, selector, newIMP, typeDescription);
+    class_replaceMethod(klass, selector, newIMP, typeDescription);
+
     if(prevImp == newIMP){
         //NSLog(@"Repetition replace but, never mind");
         //avoid selector is setted to _objc_forwardMsg in other framework
@@ -855,31 +858,40 @@ static void replaceMethodAndGenerateORIG(id klass, SEL selector, IMP newIMP){
 }
 
 static void hookForwardInvocation(id self, SEL sel, NSInvocation *anInvocation){
-//    NSLog(@"self=%@ sel=%s", self, anInvocation.selector);
+    NSLog(@"self=====%@ sel=====%s", self, anInvocation.selector);
 //    NSLog(@"Fun:%s Line:%d", __PRETTY_FUNCTION__, __LINE__);
+    NSString *callClassSelectorKey = [NSString stringWithFormat:@"_%@%@_", NSStringFromClass([self class]), NSStringFromSelector(anInvocation.selector)];
     //if class forward selector hooked in wax and
     //sel hooked with wax defined function, goto wax deal
-    if(isMethodReplacedByInvocation(object_getClass(self), @selector(forwardInvocation:)) && isClassSelectorDefinedInWax(NSStringFromClass([self class]), NSStringFromSelector(sel))){//instance->class, class->metaClass
+    if(isMethodReplacedByInvocation(object_getClass(self), @selector(forwardInvocation:)) && isClassSelectorDefinedInWax(NSStringFromClass([self class]), NSStringFromSelector(anInvocation.selector))){//instance->class, class->metaClass
 //        NSLog(@"Fun:%s Line:%d", __PRETTY_FUNCTION__, __LINE__);
-        lua_State *L = wax_currentLuaState();
-        BEGIN_STACK_MODIFY(L);
-        int result = pcallUserdataARM64Invocation(L, self, anInvocation.selector, anInvocation);
-        if (result == -1) {//error
-            if(wax_getLuaRuntimeErrorHandler()){
-                wax_getLuaRuntimeErrorHandler()([NSString stringWithFormat:@"Error calling '%s' on '%@'\n%s", sel_getName(anInvocation.selector), self, lua_tostring(L, -1)], NO);
-            }else{
-                luaL_error(L, "Error calling '%s' on '%s'\n%s", anInvocation.selector, [[self description] UTF8String], lua_tostring(L, -1));
+        if(_lastForwardClassSelecotorKey && [_lastForwardClassSelecotorKey isEqualToString:callClassSelectorKey]){
+            ((void(*)(id, SEL, id))objc_msgSend)(self, @selector(ORIGforwardInvocation:), anInvocation);
+            _lastForwardClassSelecotorKey = nil;
+        } else {
+            _lastForwardClassSelecotorKey = callClassSelectorKey;
+            lua_State *L = wax_currentLuaState();
+            BEGIN_STACK_MODIFY(L);
+            int result = pcallUserdataARM64Invocation(L, self, anInvocation.selector, anInvocation);
+            if (result == -1) {//error
+                if(wax_getLuaRuntimeErrorHandler()){
+                    wax_getLuaRuntimeErrorHandler()([NSString stringWithFormat:@"Error calling '%s' on '%@'\n%s", sel_getName(anInvocation.selector), self, lua_tostring(L, -1)], NO);
+                }else{
+                    luaL_error(L, "Error calling '%s' on '%s'\n%s", anInvocation.selector, [[self description] UTF8String], lua_tostring(L, -1));
+                }
             }
+            else if (result == 1) {//have return value
+                NSMethodSignature *signature = [self methodSignatureForSelector:anInvocation.selector];
+                void *pReturnValue = wax_copyToObjc(L, [signature methodReturnType], -1, nil);
+                [anInvocation setReturnValue:pReturnValue];
+                free(pReturnValue);
+            }
+            _lastForwardClassSelecotorKey = nil;
+            END_STACK_MODIFY(L, 0);
         }
-        else if (result == 1) {//have return value
-            NSMethodSignature *signature = [self methodSignatureForSelector:anInvocation.selector];
-            void *pReturnValue = wax_copyToObjc(L, [signature methodReturnType], -1, nil);
-            [anInvocation setReturnValue:pReturnValue];
-            free(pReturnValue);
-        }
-        END_STACK_MODIFY(L, 0);
     }else{//cal original forwardInvocation method
         ((void(*)(id, SEL, id))objc_msgSend)(self, @selector(ORIGforwardInvocation:), anInvocation);
+        _lastForwardClassSelecotorKey = nil;
     };
 }
 
