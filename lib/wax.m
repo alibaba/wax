@@ -40,6 +40,11 @@ extern int luaCallBlock(lua_State *L);
 
 extern int luaSetWaxConfig(lua_State *L);
 
+//original runtime record
+static NSMutableDictionary *waxDefinedSelectorClassDictionary;
+static NSMutableArray *waxNewAddClassArray;
+static void wax_clear();
+
 //runtime error
 static void (*wax_luaRuntimeErrorHandler)(NSString *reason, BOOL willExit);
 
@@ -188,6 +193,7 @@ void wax_startWithServer() {
 }
 
 void wax_end() {
+    wax_clear();
     [wax_gc stop];
     lua_close(wax_currentLuaState());
     currentL = 0;
@@ -352,4 +358,113 @@ void wax_setLuaRuntimeErrorHandler(void (*handler)(NSString *reason, BOOL willEx
 }
 WaxLuaRuntimeErrorHandler wax_getLuaRuntimeErrorHandler(){
     return wax_luaRuntimeErrorHandler;
+}
+
+#pragma mark original runtime-environment record
+
+void addWaxDefinedSelectorDict(NSDictionary *dict) {
+#if DEBUG
+    NSLog(@"methodDict===%@\n", dict);
+#endif
+    if (waxDefinedSelectorClassDictionary == nil) {
+        waxDefinedSelectorClassDictionary = [[NSMutableDictionary alloc] initWithCapacity:5];
+    }
+
+    if(dict[@"class"]){
+        NSMutableArray *replaceMethodList = nil;
+        if([waxDefinedSelectorClassDictionary objectForKey:dict[@"class"]] != nil){
+            replaceMethodList = [NSMutableArray arrayWithArray:[waxDefinedSelectorClassDictionary objectForKey:dict[@"class"]]];
+        } else {
+            replaceMethodList = [[NSMutableArray alloc] initWithCapacity:5];
+        }
+
+        [replaceMethodList addObject:dict];
+        [waxDefinedSelectorClassDictionary setObject:replaceMethodList forKey:dict[@"class"]];
+    }
+}
+
+void addWaxNewAddClassDict(NSDictionary *dict) {
+#if DEBUG
+    NSLog(@"classDict===%@\n", dict);
+#endif
+    if (waxNewAddClassArray == nil) {
+        waxNewAddClassArray = [[NSMutableArray alloc] initWithCapacity:5];
+    }
+    [waxNewAddClassArray addObject:dict];
+}
+
+BOOL isClassSelectorDefinedInWax(NSString *klassStr, NSString *selStr){
+    if(klassStr == nil || selStr == nil) return NO;
+
+    BOOL isDefined = NO;
+    if(waxDefinedSelectorClassDictionary){
+        //derived calss forwarding selector will use base class's forwarding
+        while (!isDefined && waxDefinedSelectorClassDictionary[klassStr]) {
+            NSArray *replaceMethodList = waxDefinedSelectorClassDictionary[klassStr];
+            for(NSDictionary *dict in replaceMethodList){
+                NSString *tmpClassStr = dict[@"class"];
+                NSString *tmpSelStr = dict[@"sel"];
+                if(tmpClassStr && [tmpClassStr isEqualToString:klassStr] &&
+                   tmpSelStr && [tmpSelStr isEqualToString:selStr]){
+                    isDefined = YES;
+                    break;
+                }
+            }//for
+
+            if(!isDefined){
+                Class klassSuper = [NSClassFromString(klassStr) superclass];
+                klassStr = NSStringFromClass(klassSuper);
+            }
+        }
+    }
+
+    return isDefined;
+}
+
+// clear the wax defined class and selectors
+static void wax_clear() {
+    for (NSString *classStr in waxDefinedSelectorClassDictionary.allKeys) {
+        //wax defined class directly dispose
+        BOOL isWaxClass = class_getInstanceVariable(NSClassFromString(classStr), WAX_CLASS_INSTANCE_USERDATA_IVAR_NAME) != nil;
+        if(isWaxClass) continue;
+
+        NSArray *replaceMethodList = [waxDefinedSelectorClassDictionary objectForKey:classStr];
+        for(NSDictionary *dict in replaceMethodList){
+            Class class = NSClassFromString(dict[@"class"]);
+            NSString *sel_str = dict[@"sel"];
+            NSString *sel_orig_str = dict[@"sel_orig"];
+            NSString *typeDesc = dict[@"typeDesc"];
+
+            if (class && sel_str && ![sel_str isKindOfClass:[NSNull class]]
+                && sel_orig_str && ![sel_orig_str isKindOfClass:[NSNull class]]
+                && typeDesc && ![typeDesc isKindOfClass:[NSNull class]]) {
+                SEL sel = NSSelectorFromString(sel_str);
+                SEL sel_orig = NSSelectorFromString(sel_orig_str);
+                if(sel && sel_orig && (sel != sel_orig)){
+                    IMP imp = class_getMethodImplementation(class, sel_orig);
+                    if(imp){
+                        class_replaceMethod(class, sel, imp, typeDesc.UTF8String);
+                        class_replaceMethod(class, sel_orig, _objc_msgForward, typeDesc);
+                    }
+                }
+            }//if
+        }//for replaceMethodlist
+    }//for class list
+
+    [waxDefinedSelectorClassDictionary removeAllObjects];
+    [waxDefinedSelectorClassDictionary release];
+    waxDefinedSelectorClassDictionary = nil;
+
+    // wax new add class rollback
+    for (NSDictionary *dict in waxNewAddClassArray) {
+        NSString *newAddClassStr = dict[@"class"];
+        Class newAddClass = NSClassFromString(newAddClassStr);
+        if(newAddClass){
+            objc_disposeClassPair(newAddClass);
+        }
+    }
+
+    [waxNewAddClassArray removeAllObjects];
+    [waxNewAddClassArray release];
+    waxNewAddClassArray = nil;
 }

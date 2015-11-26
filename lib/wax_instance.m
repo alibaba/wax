@@ -31,6 +31,8 @@ static BOOL overrideMethod(lua_State *L, wax_instance_userdata *instanceUserdata
 static int pcallUserdata(lua_State *L, id self, SEL selector, va_list args);
 static BOOL overrideMethodByInvocation(id klass, SEL selector, char *typeDescription, char *returnType);
 static BOOL addMethodByInvocation(id klass, SEL selector, char * typeDescription) ;
+static void hookForwardInvocation(id self, SEL sel, NSInvocation *anInvocation);
+static void recordWaxDefinedSelector(id klass, SEL selector, SEL newSelector, char *typeDescription);
 
 
 extern void wax_printStack(lua_State *L);
@@ -791,7 +793,8 @@ static BOOL overrideMethod(lua_State *L, wax_instance_userdata *instanceUserdata
                 typeDescription[2] = ':'; // Never forget _cmd!
                 
                 addMethodByInvocation(klass, selector, typeDescription);
-                addMethodByInvocation(metaclass, selector, typeDescription);
+                //no need to add selector to metaclass
+                //addMethodByInvocation(metaclass, selector, typeDescription);
                 
                 free(typeDescription);
             }
@@ -815,6 +818,8 @@ static SEL getORIGSelector(SEL selector){
 static BOOL isMethodReplacedByInvocation(id klass, SEL selector){
     Method selectorMethod = class_getInstanceMethod(klass, selector);
     IMP imp = method_getImplementation(selectorMethod);
+    return imp == hookForwardInvocation;
+
 #if defined(__arm64__)
     return imp == _objc_msgForward;
 #else
@@ -828,7 +833,10 @@ static void replaceMethodAndGenerateORIG(id klass, SEL selector, IMP newIMP){
     
     IMP prevImp = class_replaceMethod(klass, selector, newIMP, typeDescription);
     if(prevImp == newIMP){
-//        NSLog(@"Repetition replace but, never mind");
+        //NSLog(@"Repetition replace but, never mind");
+        //avoid selector is setted to _objc_forwardMsg in other framework
+        //and wax_clear does not deal with new add selector for objc defined class
+        recordWaxDefinedSelector(klass, selector, selector, typeDescription);
         return ;
     }
     
@@ -840,13 +848,18 @@ static void replaceMethodAndGenerateORIG(id klass, SEL selector, IMP newIMP){
     if(!class_respondsToSelector(klass, newSelector)) {
         BOOL res = class_addMethod(klass, newSelector, prevImp, typeDescription);
 //        NSLog(@"res=%d", res);
+        if(res){
+            recordWaxDefinedSelector(klass, selector, newSelector, typeDescription);
+        }
     }
 }
 
 static void hookForwardInvocation(id self, SEL sel, NSInvocation *anInvocation){
 //    NSLog(@"self=%@ sel=%s", self, anInvocation.selector);
 //    NSLog(@"Fun:%s Line:%d", __PRETTY_FUNCTION__, __LINE__);
-    if(isMethodReplacedByInvocation(object_getClass(self), anInvocation.selector)){//instance->class, class->metaClass
+    //if class forward selector hooked in wax and
+    //sel hooked with wax defined function, goto wax deal
+    if(isMethodReplacedByInvocation(object_getClass(self), @selector(forwardInvocation:)) && isClassSelectorDefinedInWax(NSStringFromClass([self class]), NSStringFromSelector(sel))){//instance->class, class->metaClass
 //        NSLog(@"Fun:%s Line:%d", __PRETTY_FUNCTION__, __LINE__);
         lua_State *L = wax_currentLuaState();
         BEGIN_STACK_MODIFY(L);
@@ -892,10 +905,22 @@ static BOOL overrideMethodByInvocation(id klass, SEL selector, char *typeDescrip
 
 static BOOL addMethodByInvocation(id klass, SEL selector, char * typeDescription) {
     class_addMethod(klass, selector, _objc_msgForward, typeDescription);//for isMethodReplacedByInvocation
-    
+    recordWaxDefinedSelector(klass, selector, selector, typeDescription);
+
     if(!isMethodReplacedByInvocation(klass, @selector(forwardInvocation:))){//just replace once
         
         replaceMethodAndGenerateORIG(klass, @selector(forwardInvocation:), (IMP)hookForwardInvocation);
     }
     return YES;
 }
+
+static void recordWaxDefinedSelector(id klass, SEL selector, SEL newSelector, char *typeDescription){
+    NSDictionary *dict = @{@"class" : klass? NSStringFromClass(klass):[NSNull null],
+                           @"sel" : selector ? NSStringFromSelector(selector) : [NSNull null],
+                           @"sel_orig" : newSelector ? NSStringFromSelector(newSelector) : [NSNull null],
+                           @"typeDesc" : typeDescription ? [NSString stringWithUTF8String:typeDescription] : [NSNull null]
+                           };
+    addWaxDefinedSelectorDict(dict);
+}
+
+

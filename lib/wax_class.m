@@ -115,6 +115,8 @@ static int __call(lua_State *L) {
             class_addMethod(metaclass, @selector(wax_originalAllocWithZone:), method_getImplementation(m), method_getTypeEncoding(m));
             class_addMethod(metaclass, @selector(allocWithZone:), (IMP)allocWithZone, "@@:^{_NSZone=}");
         }
+
+        addWaxNewAddClassDict(@{@"class":NSStringFromClass(klass)});
     }
         
     wax_instance_create(L, klass, YES);
