@@ -19,6 +19,7 @@
 #import "wax_gc.h"
 #import "wax_server.h"
 #import "wax_stdlib.h"
+#import "wax_capi.h"
 
 #import "lauxlib.h"
 #import "lobject.h"
@@ -98,6 +99,7 @@ void wax_setup() {
     luaopen_wax_struct(L);
 	
     addGlobals(L);
+    wax_openBindOCFunction(L);
 	
 	[wax_gc start];
 }
