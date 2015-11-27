@@ -1,7 +1,7 @@
 Pod::Spec.new do |s|
 
   s.name         = "wax"
-  s.version      = "1.1.0"
+  s.version      = "1.0.0"
   s.summary      = "wax Source"
 
   s.description  = <<-DESC
@@ -18,6 +18,7 @@ Pod::Spec.new do |s|
   }
 
   s.author             = { "probablycorey" => "probablycorey@gmail.com" }
+  s.source   = { :git => 'https://github.com/philonpang/wax.git', :tag => "v#{s.version}"}
 
   s.platform     = :ios
 
