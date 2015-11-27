@@ -31,7 +31,11 @@ static BOOL overrideMethod(lua_State *L, wax_instance_userdata *instanceUserdata
 static int pcallUserdata(lua_State *L, id self, SEL selector, va_list args);
 static BOOL overrideMethodByInvocation(id klass, SEL selector, char *typeDescription, char *returnType);
 static BOOL addMethodByInvocation(id klass, SEL selector, char * typeDescription) ;
+static void hookForwardInvocation(id self, SEL sel, NSInvocation *anInvocation);
+static void recordWaxDefinedSelector(id klass, SEL selector, SEL newSelector, char *typeDescription);
 
+//record the last called class_selector
+static NSString *_lastForwardClassSelecotorKey = nil;
 
 extern void wax_printStack(lua_State *L);
 extern void wax_printStackAt(lua_State *L, int i);
@@ -696,68 +700,74 @@ error:
 static BOOL overrideMethod(lua_State *L, wax_instance_userdata *instanceUserdata) {
     BEGIN_STACK_MODIFY(L);
     BOOL success = NO;
-    const char *methodName = lua_tostring(L, 2);
 
-    SEL foundSelectors[2] = {nil, nil};
-    wax_selectorForInstance(instanceUserdata, foundSelectors, methodName, YES);
-    SEL selector = foundSelectors[0];
-    if (foundSelectors[1]) {
-        //NSLog(@"Found two selectors that match %s. Defaulting to %s over %s", methodName, foundSelectors[0], foundSelectors[1]);
-    }
-    
     Class klass = [instanceUserdata->instance class];
-    
     char *typeDescription = nil;
     char *returnType = nil;
-    
-    Method method = class_getInstanceMethod(klass, selector);
-        
-    if (method) { // Is method defined in the superclass?
-        typeDescription = (char *)method_getTypeEncoding(method);
-        returnType = method_copyReturnType(method);
-    }
-    else { // Is this method implementing a protocol?
-        Class currentClass = klass;
-        
-        while (!returnType && [currentClass superclass] != [currentClass class]) { // Walk up the object heirarchy
-            uint count;
-            Protocol **protocols = class_copyProtocolList(currentClass, &count);
-                        
-            SEL possibleSelectors[2];
-            wax_selectorsForName(methodName, possibleSelectors);
+    SEL selector = nil;
+
+    //get class signature selectors
+    const char *methodName = lua_tostring(L, 2);
+    SEL foundSelectors[2] = {nil, nil};
+    wax_selectorForInstance(instanceUserdata, foundSelectors, methodName, YES);
+    for(int i = 0; i < 2; i++){
+        selector = foundSelectors[i];
+        if(!selector) continue;
+
+        Method method = class_getInstanceMethod(klass, selector);
             
-            for (int i = 0; !returnType && i < count; i++) {
-                Protocol *protocol = protocols[i];
-                struct objc_method_description m_description;
+        if (method) { // Is method defined in the superclass?
+            typeDescription = (char *)method_getTypeEncoding(method);
+            returnType = method_copyReturnType(method);
+        }
+        else { // Is this method implementing a protocol?
+            Class currentClass = klass;
+            
+            while (!returnType && [currentClass superclass] != [currentClass class]) { // Walk up the object heirarchy
+                uint count;
+                Protocol **protocols = class_copyProtocolList(currentClass, &count);
+                            
+                SEL possibleSelectors[2];
+                wax_selectorsForName(methodName, possibleSelectors);
                 
-                for (int j = 0; !returnType && j < 2; j++) {
-                    selector = possibleSelectors[j];
-                    if (!selector) continue; // There may be only one acceptable selector sent back
+                for (int i = 0; !returnType && i < count; i++) {
+                    Protocol *protocol = protocols[i];
+                    struct objc_method_description m_description;
                     
-                    m_description = protocol_getMethodDescription(protocol, selector, YES, YES);
-                    if (!m_description.name) m_description = protocol_getMethodDescription(protocol, selector, NO, YES); // Check if it is not a "required" method
-                    
-                    if (m_description.name) {
-                        typeDescription = m_description.types;
-                        returnType = method_copyReturnType((Method)&m_description);
+                    for (int j = 0; !returnType && j < 2; j++) {
+                        selector = possibleSelectors[j];
+                        if (!selector) continue; // There may be only one acceptable selector sent back
+                        
+                        m_description = protocol_getMethodDescription(protocol, selector, YES, YES);
+                        if (!m_description.name) m_description = protocol_getMethodDescription(protocol, selector, NO, YES); // Check if it is not a "required" method
+                        
+                        if (m_description.name) {
+                            typeDescription = m_description.types;
+                            returnType = method_copyReturnType((Method)&m_description);
+                        }
                     }
                 }
+                
+                free(protocols);
+                
+                currentClass = [currentClass superclass];
+            }
+        }
+
+        if (returnType) { // Matching method found! Create an Obj-C method on the
+            if (!instanceUserdata->isClass) {
+                luaL_error(L, "Trying to override method '%s' on an instance. You can only override classes", methodName);
             }
             
-            free(protocols);
-            
-            currentClass = [currentClass superclass];
+            BOOL res = overrideMethodByInvocation(klass, selector, typeDescription,returnType);
+            if(!success) success = res;
         }
     }
 
-    if (returnType) { // Matching method found! Create an Obj-C method on the
-        if (!instanceUserdata->isClass) {
-            luaL_error(L, "Trying to override method '%s' on an instance. You can only override classes", methodName);
-        }
-        
-        success = overrideMethodByInvocation(klass, selector, typeDescription,returnType);
-    }
-    else {
+    //no override success
+    if(!success){
+        returnType = nil;
+        typeDescription = nil;
 		SEL possibleSelectors[2];
         wax_selectorsForName(methodName, possibleSelectors);
 		
@@ -791,7 +801,8 @@ static BOOL overrideMethod(lua_State *L, wax_instance_userdata *instanceUserdata
                 typeDescription[2] = ':'; // Never forget _cmd!
                 
                 addMethodByInvocation(klass, selector, typeDescription);
-                addMethodByInvocation(metaclass, selector, typeDescription);
+                //no need to add selector to metaclass
+                //addMethodByInvocation(metaclass, selector, typeDescription);
                 
                 free(typeDescription);
             }
@@ -815,6 +826,8 @@ static SEL getORIGSelector(SEL selector){
 static BOOL isMethodReplacedByInvocation(id klass, SEL selector){
     Method selectorMethod = class_getInstanceMethod(klass, selector);
     IMP imp = method_getImplementation(selectorMethod);
+    return imp == hookForwardInvocation;
+
 #if defined(__arm64__)
     return imp == _objc_msgForward;
 #else
@@ -824,11 +837,15 @@ static BOOL isMethodReplacedByInvocation(id klass, SEL selector){
 
 static void replaceMethodAndGenerateORIG(id klass, SEL selector, IMP newIMP){
     Method selectorMethod = class_getInstanceMethod(klass, selector);
+    IMP prevImp = method_getImplementation(selectorMethod);
     const char *typeDescription =  method_getTypeEncoding(selectorMethod);
-    
-    IMP prevImp = class_replaceMethod(klass, selector, newIMP, typeDescription);
+    class_replaceMethod(klass, selector, newIMP, typeDescription);
+
     if(prevImp == newIMP){
-//        NSLog(@"Repetition replace but, never mind");
+        //NSLog(@"Repetition replace but, never mind");
+        //avoid selector is setted to _objc_forwardMsg in other framework
+        //and wax_clear does not deal with new add selector for objc defined class
+        recordWaxDefinedSelector(klass, selector, selector, typeDescription);
         return ;
     }
     
@@ -837,36 +854,56 @@ static void replaceMethodAndGenerateORIG(id klass, SEL selector, IMP newIMP){
     strcpy(newSelectorName, WAX_ORIGINAL_METHOD_PREFIX);
     strcat(newSelectorName, selectorName);
     SEL newSelector = sel_getUid(newSelectorName);
+    BOOL res = NO;
     if(!class_respondsToSelector(klass, newSelector)) {
-        BOOL res = class_addMethod(klass, newSelector, prevImp, typeDescription);
-//        NSLog(@"res=%d", res);
+        res = class_addMethod(klass, newSelector, prevImp, typeDescription);
+    } else {
+        res = class_replaceMethod(klass, newSelector, prevImp, typeDescription);
+    }
+
+    //record
+    if(res){
+        recordWaxDefinedSelector(klass, selector, newSelector, typeDescription);
     }
 }
 
 static void hookForwardInvocation(id self, SEL sel, NSInvocation *anInvocation){
-//    NSLog(@"self=%@ sel=%s", self, anInvocation.selector);
+#if DEBUG
+    NSLog(@"self=====%@ sel=====%s", self, anInvocation.selector);
+#endif
 //    NSLog(@"Fun:%s Line:%d", __PRETTY_FUNCTION__, __LINE__);
-    if(isMethodReplacedByInvocation(object_getClass(self), anInvocation.selector)){//instance->class, class->metaClass
+    NSString *callClassSelectorKey = [NSString stringWithFormat:@"_%@%@_", NSStringFromClass([self class]), NSStringFromSelector(anInvocation.selector)];
+    //if class forward selector hooked in wax and
+    //sel hooked with wax defined function, goto wax deal
+    if(isMethodReplacedByInvocation(object_getClass(self), @selector(forwardInvocation:)) && isClassSelectorDefinedInWax(NSStringFromClass([self class]), NSStringFromSelector(anInvocation.selector))){//instance->class, class->metaClass
 //        NSLog(@"Fun:%s Line:%d", __PRETTY_FUNCTION__, __LINE__);
-        lua_State *L = wax_currentLuaState();
-        BEGIN_STACK_MODIFY(L);
-        int result = pcallUserdataARM64Invocation(L, self, anInvocation.selector, anInvocation);
-        if (result == -1) {//error
-            if(wax_getLuaRuntimeErrorHandler()){
-                wax_getLuaRuntimeErrorHandler()([NSString stringWithFormat:@"Error calling '%s' on '%@'\n%s", sel_getName(anInvocation.selector), self, lua_tostring(L, -1)], NO);
-            }else{
-                luaL_error(L, "Error calling '%s' on '%s'\n%s", anInvocation.selector, [[self description] UTF8String], lua_tostring(L, -1));
+        if(_lastForwardClassSelecotorKey && [_lastForwardClassSelecotorKey isEqualToString:callClassSelectorKey]){
+            ((void(*)(id, SEL, id))objc_msgSend)(self, @selector(ORIGforwardInvocation:), anInvocation);
+            _lastForwardClassSelecotorKey = nil;
+        } else {
+            _lastForwardClassSelecotorKey = callClassSelectorKey;
+            lua_State *L = wax_currentLuaState();
+            BEGIN_STACK_MODIFY(L);
+            int result = pcallUserdataARM64Invocation(L, self, anInvocation.selector, anInvocation);
+            if (result == -1) {//error
+                if(wax_getLuaRuntimeErrorHandler()){
+                    wax_getLuaRuntimeErrorHandler()([NSString stringWithFormat:@"Error calling '%s' on '%@'\n%s", sel_getName(anInvocation.selector), self, lua_tostring(L, -1)], NO);
+                }else{
+                    luaL_error(L, "Error calling '%s' on '%s'\n%s", anInvocation.selector, [[self description] UTF8String], lua_tostring(L, -1));
+                }
             }
+            else if (result == 1) {//have return value
+                NSMethodSignature *signature = [self methodSignatureForSelector:anInvocation.selector];
+                void *pReturnValue = wax_copyToObjc(L, [signature methodReturnType], -1, nil);
+                [anInvocation setReturnValue:pReturnValue];
+                free(pReturnValue);
+            }
+            _lastForwardClassSelecotorKey = nil;
+            END_STACK_MODIFY(L, 0);
         }
-        else if (result == 1) {//have return value
-            NSMethodSignature *signature = [self methodSignatureForSelector:anInvocation.selector];
-            void *pReturnValue = wax_copyToObjc(L, [signature methodReturnType], -1, nil);
-            [anInvocation setReturnValue:pReturnValue];
-            free(pReturnValue);
-        }
-        END_STACK_MODIFY(L, 0);
     }else{//cal original forwardInvocation method
         ((void(*)(id, SEL, id))objc_msgSend)(self, @selector(ORIGforwardInvocation:), anInvocation);
+        _lastForwardClassSelecotorKey = nil;
     };
 }
 
@@ -892,10 +929,22 @@ static BOOL overrideMethodByInvocation(id klass, SEL selector, char *typeDescrip
 
 static BOOL addMethodByInvocation(id klass, SEL selector, char * typeDescription) {
     class_addMethod(klass, selector, _objc_msgForward, typeDescription);//for isMethodReplacedByInvocation
-    
+    recordWaxDefinedSelector(klass, selector, selector, typeDescription);
+
     if(!isMethodReplacedByInvocation(klass, @selector(forwardInvocation:))){//just replace once
         
         replaceMethodAndGenerateORIG(klass, @selector(forwardInvocation:), (IMP)hookForwardInvocation);
     }
     return YES;
 }
+
+static void recordWaxDefinedSelector(id klass, SEL selector, SEL newSelector, char *typeDescription){
+    NSDictionary *dict = @{@"class" : klass? NSStringFromClass(klass):[NSNull null],
+                           @"sel" : selector ? NSStringFromSelector(selector) : [NSNull null],
+                           @"sel_orig" : newSelector ? NSStringFromSelector(newSelector) : [NSNull null],
+                           @"typeDesc" : typeDescription ? [NSString stringWithUTF8String:typeDescription] : [NSNull null]
+                           };
+    addWaxDefinedSelectorDict(dict);
+}
+
+

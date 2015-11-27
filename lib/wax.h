@@ -37,3 +37,11 @@ typedef  void (*WaxLuaRuntimeErrorHandler)(NSString *reason, BOOL willExit);
 void wax_setLuaRuntimeErrorHandler(WaxLuaRuntimeErrorHandler handler);
 
 WaxLuaRuntimeErrorHandler wax_getLuaRuntimeErrorHandler();
+
+
+//记录wax-lua定义的selector
+void addWaxDefinedSelectorDict(NSDictionary *dict);
+//记录wax-lua中定义的类
+void addWaxNewAddClassDict(NSDictionary *dict);
+//判断forward转发的class_selector是否在wax中定义
+BOOL isClassSelectorDefinedInWax(NSString *klassStr, NSString *selStr);
