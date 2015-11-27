@@ -700,68 +700,74 @@ error:
 static BOOL overrideMethod(lua_State *L, wax_instance_userdata *instanceUserdata) {
     BEGIN_STACK_MODIFY(L);
     BOOL success = NO;
-    const char *methodName = lua_tostring(L, 2);
 
-    SEL foundSelectors[2] = {nil, nil};
-    wax_selectorForInstance(instanceUserdata, foundSelectors, methodName, YES);
-    SEL selector = foundSelectors[0];
-    if (foundSelectors[1]) {
-        //NSLog(@"Found two selectors that match %s. Defaulting to %s over %s", methodName, foundSelectors[0], foundSelectors[1]);
-    }
-    
     Class klass = [instanceUserdata->instance class];
-    
     char *typeDescription = nil;
     char *returnType = nil;
-    
-    Method method = class_getInstanceMethod(klass, selector);
-        
-    if (method) { // Is method defined in the superclass?
-        typeDescription = (char *)method_getTypeEncoding(method);
-        returnType = method_copyReturnType(method);
-    }
-    else { // Is this method implementing a protocol?
-        Class currentClass = klass;
-        
-        while (!returnType && [currentClass superclass] != [currentClass class]) { // Walk up the object heirarchy
-            uint count;
-            Protocol **protocols = class_copyProtocolList(currentClass, &count);
-                        
-            SEL possibleSelectors[2];
-            wax_selectorsForName(methodName, possibleSelectors);
+    SEL selector = nil;
+
+    //get class signature selectors
+    const char *methodName = lua_tostring(L, 2);
+    SEL foundSelectors[2] = {nil, nil};
+    wax_selectorForInstance(instanceUserdata, foundSelectors, methodName, YES);
+    for(int i = 0; i < 2; i++){
+        selector = foundSelectors[i];
+        if(!selector) continue;
+
+        Method method = class_getInstanceMethod(klass, selector);
             
-            for (int i = 0; !returnType && i < count; i++) {
-                Protocol *protocol = protocols[i];
-                struct objc_method_description m_description;
+        if (method) { // Is method defined in the superclass?
+            typeDescription = (char *)method_getTypeEncoding(method);
+            returnType = method_copyReturnType(method);
+        }
+        else { // Is this method implementing a protocol?
+            Class currentClass = klass;
+            
+            while (!returnType && [currentClass superclass] != [currentClass class]) { // Walk up the object heirarchy
+                uint count;
+                Protocol **protocols = class_copyProtocolList(currentClass, &count);
+                            
+                SEL possibleSelectors[2];
+                wax_selectorsForName(methodName, possibleSelectors);
                 
-                for (int j = 0; !returnType && j < 2; j++) {
-                    selector = possibleSelectors[j];
-                    if (!selector) continue; // There may be only one acceptable selector sent back
+                for (int i = 0; !returnType && i < count; i++) {
+                    Protocol *protocol = protocols[i];
+                    struct objc_method_description m_description;
                     
-                    m_description = protocol_getMethodDescription(protocol, selector, YES, YES);
-                    if (!m_description.name) m_description = protocol_getMethodDescription(protocol, selector, NO, YES); // Check if it is not a "required" method
-                    
-                    if (m_description.name) {
-                        typeDescription = m_description.types;
-                        returnType = method_copyReturnType((Method)&m_description);
+                    for (int j = 0; !returnType && j < 2; j++) {
+                        selector = possibleSelectors[j];
+                        if (!selector) continue; // There may be only one acceptable selector sent back
+                        
+                        m_description = protocol_getMethodDescription(protocol, selector, YES, YES);
+                        if (!m_description.name) m_description = protocol_getMethodDescription(protocol, selector, NO, YES); // Check if it is not a "required" method
+                        
+                        if (m_description.name) {
+                            typeDescription = m_description.types;
+                            returnType = method_copyReturnType((Method)&m_description);
+                        }
                     }
                 }
+                
+                free(protocols);
+                
+                currentClass = [currentClass superclass];
+            }
+        }
+
+        if (returnType) { // Matching method found! Create an Obj-C method on the
+            if (!instanceUserdata->isClass) {
+                luaL_error(L, "Trying to override method '%s' on an instance. You can only override classes", methodName);
             }
             
-            free(protocols);
-            
-            currentClass = [currentClass superclass];
+            BOOL res = overrideMethodByInvocation(klass, selector, typeDescription,returnType);
+            if(!success) success = res;
         }
     }
 
-    if (returnType) { // Matching method found! Create an Obj-C method on the
-        if (!instanceUserdata->isClass) {
-            luaL_error(L, "Trying to override method '%s' on an instance. You can only override classes", methodName);
-        }
-        
-        success = overrideMethodByInvocation(klass, selector, typeDescription,returnType);
-    }
-    else {
+    //no override success
+    if(!success){
+        returnType = nil;
+        typeDescription = nil;
 		SEL possibleSelectors[2];
         wax_selectorsForName(methodName, possibleSelectors);
 		
@@ -848,12 +854,16 @@ static void replaceMethodAndGenerateORIG(id klass, SEL selector, IMP newIMP){
     strcpy(newSelectorName, WAX_ORIGINAL_METHOD_PREFIX);
     strcat(newSelectorName, selectorName);
     SEL newSelector = sel_getUid(newSelectorName);
+    BOOL res = NO;
     if(!class_respondsToSelector(klass, newSelector)) {
-        BOOL res = class_addMethod(klass, newSelector, prevImp, typeDescription);
-//        NSLog(@"res=%d", res);
-        if(res){
-            recordWaxDefinedSelector(klass, selector, newSelector, typeDescription);
-        }
+        res = class_addMethod(klass, newSelector, prevImp, typeDescription);
+    } else {
+        res = class_replaceMethod(klass, newSelector, prevImp, typeDescription);
+    }
+
+    //record
+    if(res){
+        recordWaxDefinedSelector(klass, selector, newSelector, typeDescription);
     }
 }
 

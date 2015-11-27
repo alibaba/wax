@@ -117,6 +117,11 @@ static int __call(lua_State *L) {
         }
 
         addWaxNewAddClassDict(@{@"class":NSStringFromClass(klass)});
+    }else{
+        //if wax_clear not disposed the class because of class's subclass or instance used, still record the klass
+        if(class_getInstanceVariable(klass, WAX_CLASS_INSTANCE_USERDATA_IVAR_NAME) != nil){
+            addWaxNewAddClassDict(@{@"class":NSStringFromClass(klass)});
+        }
     }
         
     wax_instance_create(L, klass, YES);

@@ -425,6 +425,7 @@ BOOL isClassSelectorDefinedInWax(NSString *klassStr, NSString *selStr){
 
 // clear the wax defined class and selectors
 static void wax_clear() {
+    [wax_globalLock() lock];
     for (NSString *classStr in waxDefinedSelectorClassDictionary.allKeys) {
         //wax defined class directly dispose
         BOOL isWaxClass = class_getInstanceVariable(NSClassFromString(classStr), WAX_CLASS_INSTANCE_USERDATA_IVAR_NAME) != nil;
@@ -457,16 +458,22 @@ static void wax_clear() {
     [waxDefinedSelectorClassDictionary release];
     waxDefinedSelectorClassDictionary = nil;
 
-    // wax new add class rollback
-    for (NSDictionary *dict in waxNewAddClassArray) {
-        NSString *newAddClassStr = dict[@"class"];
-        Class newAddClass = NSClassFromString(newAddClassStr);
-        if(newAddClass){
-            objc_disposeClassPair(newAddClass);
+    // wax new add class rollback, inverse to dispose
+    // because almost subclasses added after baseclasses
+    // depends on require sequence
+    if(waxNewAddClassArray && waxNewAddClassArray.count > 0){
+        for (int i = waxNewAddClassArray.count-1; i >= 0; i--) {
+            NSDictionary *dict = [waxNewAddClassArray objectAtIndex:i];
+            NSString *newAddClassStr = dict[@"class"];
+            Class newAddClass = NSClassFromString(newAddClassStr);
+            if(newAddClass && !class_respondsToSelector(newAddClass, @selector(viewDidLoad))){
+                objc_disposeClassPair(newAddClass);
+            }
         }
     }
 
     [waxNewAddClassArray removeAllObjects];
     [waxNewAddClassArray release];
     waxNewAddClassArray = nil;
+    [wax_globalLock() unlock];
 }
