@@ -466,7 +466,7 @@ static void wax_clear() {
             NSDictionary *dict = [waxNewAddClassArray objectAtIndex:i];
             NSString *newAddClassStr = dict[@"class"];
             Class newAddClass = NSClassFromString(newAddClassStr);
-            if(newAddClass){
+            if(newAddClass && !class_respondsToSelector(newAddClass, @selector(viewDidLoad))){
                 objc_disposeClassPair(newAddClass);
             }
         }
