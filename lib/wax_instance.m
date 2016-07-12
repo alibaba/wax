@@ -869,7 +869,7 @@ static void replaceMethodAndGenerateORIG(id klass, SEL selector, IMP newIMP){
 
 static void hookForwardInvocation(id self, SEL sel, NSInvocation *anInvocation){
 #if DEBUG
-    NSLog(@"self=====%@ sel=====%s", self, anInvocation.selector);
+    //NSLog(@"self=====%@ sel=====%s", self, anInvocation.selector);
 #endif
 //    NSLog(@"Fun:%s Line:%d", __PRETTY_FUNCTION__, __LINE__);
     NSString *callClassSelectorKey = [NSString stringWithFormat:@"_%@%@_", NSStringFromClass([self class]), NSStringFromSelector(anInvocation.selector)];
