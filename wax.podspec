@@ -1,7 +1,7 @@
 Pod::Spec.new do |s|
 
   s.name         = "wax"
-  s.version      = "1.0.1"
+  s.version      = "1.0.2"
   s.summary      = "wax Source"
 
   s.description  = <<-DESC
@@ -25,7 +25,8 @@ Pod::Spec.new do |s|
   #  When using multiple platforms
   s.ios.deployment_target = '4.3'
 
-  s.source_files  = 'lib/*.{h,m}', 'lib/adaptation/*.{h,m}','lib/lua/*.{h,m,c}', 'lib/extensions/block/*.{h,m}', 'lib/extensions/capi/**/*.{h,m,c}', 'lib/extensions/CGAffine/*.{h,m}','lib/extensions/CGContext/*.{h,m}','lib/extensions/filesystem/*.{h,m}' ,'lib/extensions/HTTP/*.{h,m}','lib/extensions/ivar/*.{h,m}','lib/extensions/json/**/*.{h,m,c}','lib/extensions/SQLite/**/*.{h,m}','lib/extensions/xml/**/*.{h,m}'
+  s.source_files  = 'lib/*.{h,m}', 'lib/adaptation/*.{h,m}','lib/lua/*.{h,m,c}', 'lib/extensions/block/*.{h,m}',  'lib/extensions/CGAffine/*.{h,m}','lib/extensions/CGContext/*.{h,m}','lib/extensions/filesystem/*.{h,m}' ,'lib/extensions/HTTP/*.{h,m}','lib/extensions/ivar/*.{h,m}','lib/extensions/SQLite/*.{h,m}','lib/extensions/xml/*.{h,m}','lib/extensions/capi/*.{h,m,c}','lib/extensions/capi/tolua++/*.{h,m,c}','lib/extensions/capi/tolua++/bind/*.{h,m,c}','lib/extensions/json/*.{h,m,c}','lib/extensions/json/yajl/*.{h,m,c}'
+
   s.library = "xml2","sqlite3"
   s.xcconfig = { 'HEADER_SEARCH_PATHS' => '${SDK_DIR}/usr/include/libxml2' }
 
