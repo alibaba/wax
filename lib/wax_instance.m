@@ -501,6 +501,24 @@ static int methodClosure(lua_State *L) {
         luaL_error(L, "'%s' has no method selector '%s'", className, selectorName);
     }
     
+#ifdef __LP64__
+    // see http://stackoverflow.com/questions/19874502/nsinvocation-getreturnvalue-with-double-value-produces-0-unexpectedly
+    const char *type = [signature methodReturnType];
+    NSMutableString *overrideType = nil;
+    if (strcmp(type, "d") == 0) {
+        overrideType = [NSMutableString stringWithString:@"{?=d}@:"];
+    } else if (strcmp(type, "f") == 0) {
+        overrideType = [NSMutableString stringWithString:@"{?=f}@:"];
+    }
+    if (overrideType) {
+        for (int i = 2; i < signature.numberOfArguments; i++) {
+            const char *argType = [signature getArgumentTypeAtIndex:i];
+            [overrideType appendFormat:@"%s", argType];
+        }
+        signature = [NSMethodSignature signatureWithObjCTypes:[overrideType UTF8String]];
+    }
+#endif
+    
     NSInvocation *invocation = nil;
     invocation = [NSInvocation invocationWithMethodSignature:signature];
         
@@ -538,7 +556,16 @@ static int methodClosure(lua_State *L) {
         void *buffer = calloc(1, methodReturnLength);
         [invocation getReturnValue:buffer];
             
-        wax_fromObjc(L, [signature methodReturnType], buffer);
+#ifdef __LP64__
+        if (overrideType) {
+            wax_fromObjcForFloatOrDouble(L, [signature methodReturnType], buffer);
+        } else {
+#endif
+            wax_fromObjc(L, [signature methodReturnType], buffer);
+            
+#ifdef __LP64__
+        }
+#endif
                 
         if (autoAlloc) {
             if (lua_isnil(L, -1)) {

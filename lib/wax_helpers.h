@@ -84,6 +84,11 @@ int wax_getStackTrace(lua_State *L);
 
 // Convertion Helpers
 int wax_fromObjc(lua_State *L, const char *typeDescription, void *buffer);
+
+#ifdef __LP64__
+int wax_fromObjcForFloatOrDouble(lua_State *L, const char *typeDescription, void *buffer);
+#endif
+
 void wax_fromInstance(lua_State *L, id instance);
 void wax_fromStruct(lua_State *L, const char *typeDescription, void *buffer);
     
