@@ -445,11 +445,28 @@ static void wax_clear() {
                 SEL sel_orig = NSSelectorFromString(sel_orig_str);
                 if(sel && sel_orig && (sel != sel_orig)){
                     IMP imp = class_getMethodImplementation(class, sel_orig);
-                    if(imp){
+                    BOOL isNull = NO;
+#if defined(__arm64__)
+                    if(imp == _objc_msgForward) {
+                        isNull = YES;
+                    }
+#else
+                    if(imp == _objc_msgForward || imp == (IMP)_objc_msgForward_stret){
+                        isNull = YES;
+                    }
+#endif
+                    if (isNull) {
+                        id metaclass = objc_getMetaClass(object_getClassName(class));
+                        IMP metaImp = class_respondsToSelector(metaclass, sel_orig) ? class_getMethodImplementation(metaclass, sel_orig) : NULL;
+                        class = metaclass;
+                        imp = metaImp;
+                    }
+                    
+                    if(imp && imp != NULL){
                         class_replaceMethod(class, sel, imp, typeDesc.UTF8String);
                         class_replaceMethod(class, sel_orig, _objc_msgForward, typeDesc);
                     }
-                }
+                }//if(sel && sel_orig && (sel != sel_orig))
             }//if
         }//for replaceMethodlist
     }//for class list
