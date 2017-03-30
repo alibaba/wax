@@ -103,6 +103,27 @@ int wax_getStackTrace(lua_State *L) {
     return 1;
 }
 
+#ifdef __LP64__
+int wax_fromObjcForFloatOrDouble(lua_State *L, const char *typeDescription, void *buffer) {
+    BEGIN_STACK_MODIFY(L)
+    
+    typeDescription = wax_removeProtocolEncodings(typeDescription);
+    
+    int size = wax_sizeOfTypeDescription(typeDescription);
+    
+    if (strcmp(typeDescription, "{?=f}") == 0) {
+        lua_pushnumber(L, *(float *)buffer);
+    } else if (strcmp(typeDescription, "{?=d}") == 0) {
+        lua_pushnumber(L, *(double *)buffer);
+    } else {
+        luaL_error(L, "Unable to convert Obj-C type with type description '%s', double or float expected", typeDescription);
+    }
+    
+    END_STACK_MODIFY(L, 1)
+    
+    return size;
+}
+#endif
 
 //change buffer to lua object and push stack, if it's OC object, then retain it.
 int wax_fromObjc(lua_State *L, const char *typeDescription, void *buffer) {
